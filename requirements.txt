@@ -1,0 +1,13 @@
+Flask==2.0.3
+kafka-python
+sumolib
+matplotlib
+kazoo
+lxml
+pyproj
+werkzeug==2.2.2
+ansible
+kubernetes
+openshift
+jmespath
+jsonify
