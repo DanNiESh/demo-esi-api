@@ -55,3 +55,11 @@ oc extract -n kafka secret/default-cluster-ca-cert --to=/opt/kafka/truststore/ -
 ```bash
 podman run -v /opt/kafka:/opt/kafka nerc-images/demo-esi-api:computate-api
 ```
+
+## How to connect to ESI API
+To establish a connection, you'll need to: 
+1. put the clouds.yaml file in `~/.config/openstack/clouds.yaml`. You can refer to the 
+`example_clouds.yaml` for a sample clouds.yaml. 
+
+2. set the environment variable `CLOUD_NAME`.
+For the provided `example_clouds.yaml`, the CLOUD_NAME should be set to "openstack".

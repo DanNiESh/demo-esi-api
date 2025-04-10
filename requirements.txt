@@ -11,3 +11,5 @@ kubernetes
 openshift
 jmespath
 jsonify
+openstacksdk
+esisdk
