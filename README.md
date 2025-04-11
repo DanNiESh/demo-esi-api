@@ -8,13 +8,13 @@ pip install -r requirements.txt
 python app.py
 ```
 
-In a separate terminal, test the request: 
+In a separate terminal, test the request:
 
 ```bash
-curl -X GET http://localhost:8081/api/v1/list/node
-curl -X GET http://localhost:8081/api/v1/list/networks
-curl -X POST http://localhost:8081/api/v1/order/bare-metal -d '{"network_id": "<some network>",
-  "Nodes": [{"resource_class": "fc830", "number": 3}, 
+curl -X GET http://localhost:8081/api/v1/nodes/list
+curl -X GET http://localhost:8081/api/v1/networks/list
+curl -X POST http://localhost:8081/api/v1/baremetal-order/fulfill -d '{"network_id": "<some network>",
+  "Nodes": [{"resource_class": "fc830", "number": 3},
          {"resource_class": "<some gpu class>", "number":2}]}'
 ```
 
@@ -57,9 +57,9 @@ podman run -v /opt/kafka:/opt/kafka nerc-images/demo-esi-api:computate-api
 ```
 
 ## How to connect to ESI API
-To establish a connection, you'll need to: 
-1. put the clouds.yaml file in `~/.config/openstack/clouds.yaml`. You can refer to the 
-`example_clouds.yaml` for a sample clouds.yaml. 
+To establish a connection, you'll need to:
+1. put the clouds.yaml file in `~/.config/openstack/clouds.yaml`. You can refer to the
+`example_clouds.yaml` for a sample clouds.yaml.
 
 2. set the environment variable `CLOUD_NAME`.
 For the provided `example_clouds.yaml`, the CLOUD_NAME should be set to "openstack".
