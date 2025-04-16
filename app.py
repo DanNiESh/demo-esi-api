@@ -44,25 +44,29 @@ def nodes_list():
     """
     try:
         conn = get_esi_connection(cloud=cloud_name)
-        node_networks = nodes.network_list(conn)
+        node_networks_res = nodes.network_list(conn)
+        node_networks = {nn['node'].id: nn['network_info'] for nn in node_networks_res}
+        nodes_all = conn.lease.nodes()
         items = []
-        for node_network in node_networks:
-            node = node_network['node']
-            network_info_list = []
-            # Get node network configurations
-            for node_port in node_network['network_info']:
-                if node_port["networks"]:
-                    network = node_port['networks'].get('parent')
-                stripped_network_info = {
-                    'baremetal_port': node_port["baremetal_port"],
-                    'network_ports': node_port["network_ports"],
-                    'network': network,
-                }
-                network_info_list.append(stripped_network_info)
-
+        for node in nodes_all:
             # Get node leases
             leases = conn.lease.leases(resource_uuid=node.id)
-            lease_list = [lease for lease in leases]
+            lease_list = [l for l in leases] if leases else []
+
+            # Get node network configurations
+            network_info_list = []
+            node_network = node_networks.get(node.id)
+            if node_network:
+                for node_port in node_network:
+                    if node_port["networks"]:
+                        network = node_port['networks'].get('parent')
+                    stripped_network_info = {
+                        'baremetal_port': node_port["baremetal_port"],
+                        'network_ports': node_port["network_ports"],
+                        'network': network,
+                    }
+                    network_info_list.append(stripped_network_info)
+
             items.append({'node': node,
                 'lease_info': lease_list,
                 'network_info': network_info_list
