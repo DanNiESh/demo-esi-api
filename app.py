@@ -189,6 +189,35 @@ def networks_list():
     except Exception as e:
         return jsonify({"error": str(e)})
 
+@app.route('/api/v1/offers/list', methods=['GET'])
+def offers_list():
+    """
+    Lists available node offer counts grouped by baremetal resource_class.
+
+    Returns:
+        JSON dictionary in format:
+        {
+            "fc430": 4,
+            "gpu": 2,
+            ...
+        }
+    """
+    try:
+        conn = get_esi_connection(cloud=cloud_name)
+        now = datetime.now(timezone.utc)
+        offers = list(conn.lease.offers(available_start_time=now,
+                                        available_end_time=now + timedelta(days=7)))
+
+        resource_class_count = {}
+        for offer in offers:
+            rc = offer.resource_class
+            resource_class_count[rc] = resource_class_count.get(rc, 0) + 1
+
+        return jsonify(resource_class_count)
+
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
 def start():
     flask_port = os.environ.get('FLASK_PORT') or 8081
     flask_port = int(flask_port)
