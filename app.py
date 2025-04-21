@@ -58,18 +58,17 @@ def nodes_list():
             node_network = node_networks.get(node.id)
             if node_network:
                 for node_port in node_network:
+                    mac_address = node_port["baremetal_port"]["address"]
+                    network_string = mac_address
                     if node_port["networks"]:
                         network = node_port['networks'].get('parent')
-                    stripped_network_info = {
-                        'baremetal_port': node_port["baremetal_port"],
-                        'network_ports': node_port["network_ports"],
-                        'network': network,
-                    }
-                    network_info_list.append(stripped_network_info)
+                        if network:
+                            network_string = "%s [%s (%s)]" % (network_string, network.get("name"), network.get("provider_segmentation_id"))
+                    network_info_list.append(network_string)
 
             items.append({'node': node,
                 'lease_info': lease_list,
-                'network_info': network_info_list
+                'network_info': "\n".join(network_info_list)
                 })
         return jsonify(items)
     except Exception as e:
