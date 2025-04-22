@@ -13,3 +13,4 @@ jmespath
 jsonify
 openstacksdk
 esisdk
+metalsmith>=2.3.0

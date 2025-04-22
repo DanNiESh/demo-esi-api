@@ -10,6 +10,9 @@ import signal
 import os
 import sys
 import traceback
+from metalsmith import _provisioner
+from metalsmith import instance_config
+
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -147,7 +150,9 @@ def baremetal_order_fulfill():
         "nodes": [
             {"resource_class": "fc430", "number": 2},
             {"resource_class": "gpu", "number": 1}
-        ]
+        ],
+        "image": "<image name or id>", (if provision with metalsmith)
+        "ssh_keys": [ssh_key_str1, ssh_key_str2...], (if provision with metalsmith)
     }
     """
     try:
@@ -187,6 +192,43 @@ def networks_list():
         return jsonify(networks)
     except Exception as e:
         return jsonify({"error": str(e)})
+
+@app.route('/api/v1/nodes/deploy', methods=['POST'])
+def node_deploy():
+    """
+    Provision a baremetal node with metalsmith.
+    The request body should be like this:
+    {
+        "node": <node id or name>,
+        "image": <image name>,
+        "network": <network id or name>,
+        "ssh_keys": [ssh_key_str1, ssh_key_str2...]
+    }
+    """
+    try:
+        kwargs = request.get_json()
+        if not kwargs:
+            return jsonify({'error': 'Missing request data'}), 400
+        node = kwargs.get('node')
+        image = kwargs.get('image')
+        network = kwargs.get('network')
+        ssh_keys = kwargs.get('ssh_keys')
+        if not node or not image or not network or not ssh_keys:
+            return jsonify({'error': 'Missing node, image, network or ssh keys'}), 400
+
+        config = instance_config.GenericConfig(ssh_keys=kwargs['ssh_keys'])
+
+        conn = get_openstack_connection(cloud=cloud_name)
+        provisioner = _provisioner.Provisioner(session=conn.session)
+        provisioner.provision_node(node, image, nics=[{"network": network}], config=config)
+        return jsonify({
+            'status': 'success',
+            'message': f'Node {node} is being provisioned with image {image}'
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 def start():
     flask_port = os.environ.get('FLASK_PORT') or 8081
