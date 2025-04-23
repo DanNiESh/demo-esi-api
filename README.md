@@ -15,9 +15,9 @@ curl -X GET http://localhost:8081/api/v1/nodes/list
 curl -X GET http://localhost:8081/api/v1/networks/list
 curl -X POST http://localhost:8081/api/v1/baremetal-order/fulfill \
   -H "Content-Type: application/json" \
-  -d '{"network_id": "provisioning",
-       "nodes": [{"resource_class": "fc830", "number": 3},
-                 {"resource_class": "gpu", "number": 2}]
+  -d '{"order_id": "123_xyz",
+       "network_id": "provisioning",
+       "nodes": [{"resource_class": "fc430", "number": 1}]
   }'
 ```
 ## How to run the application as a Podman container

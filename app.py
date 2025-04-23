@@ -1,7 +1,14 @@
 import asyncio
+import copy
 from datetime import datetime, timezone, timedelta
 from esi_api.connections import get_openstack_connection, get_esi_connection
 from esi.lib import nodes
+
+from consumer import FlaskKafka
+from kafka import  KafkaProducer
+from kazoo.client import KazooClient
+from kazoo.exceptions import NodeExistsError
+
 from flask import Flask, jsonify, request
 import logging
 from threading import Event, Thread
@@ -20,6 +27,42 @@ INTERRUPT_EVENT = Event()
 
 cloud_name = os.environ.get('CLOUD_NAME') or "openstack"
 
+kafka_brokers = os.environ.get('KAFKA_BROKERS') or "kafka-kafka-bootstrap:9093"
+kafka_group_fulfill = os.environ.get('KAFKA_GROUP_FULFILL') or "esi-fulfill-group"
+kafka_topic_fulfill_offer = os.environ.get('KAFKA_TOPIC_FULFILL_OFFER') or "esi-fulfill-offer-task"
+kafka_topic_order_loop = os.environ.get('KAFKA_TOPIC_ORDER_LOOP') or "esi-fulfill-order-loop"
+kafka_security_protocol = os.environ.get('KAFKA_SECURITY_PROTOCOL') or "SSL"
+# Run: oc extract -n ai-telemetry-cbca60 secret/kafka-cluster-ca-cert --to=/opt/app-root/src/kafka/truststore/ --keys=ca.crt --confirm
+kafka_ssl_cafile = os.environ.get('KAFKA_SSL_CAFILE') or "/opt/app-root/src/kafka/truststore/ca.crt"
+# Run: oc extract -n ai-telemetry-cbca60 secret/esi --to=/opt/app-root/src/kafka/keystore/ --keys=user.crt --confirm
+kafka_ssl_certfile = os.environ.get('KAFKA_SSL_CERTFILE') or "/opt/app-root/src/kafka/keystore/user.crt"
+# Run: oc extract -n ai-telemetry-cbca60 secret/esi --to=/opt/app-root/src/kafka/keystore/ --keys=user.key --confirm
+kafka_ssl_keyfile = os.environ.get('KAFKA_SSL_KEYFILE') or "/opt/app-root/src/kafka/keystore/user.key"
+kafka_max_poll_records = int(os.environ.get('KAFKA_MAX_POLL_RECORDS') or "1")
+kafka_max_poll_interval_ms = int(os.environ.get('KAFKA_MAX_POLL_INTERVAL_MS') or "3000000")
+
+zookeeper_host_name = os.environ.get('ZOOKEEPER_HOST_NAME') or "zookeeper"
+zookeeper_port = int(os.environ.get('ZOOKEEPER_PORT') or "2181")
+
+
+producer = KafkaProducer(
+        bootstrap_servers=kafka_brokers
+        , security_protocol=kafka_security_protocol
+        , ssl_cafile=kafka_ssl_cafile
+        , ssl_certfile=kafka_ssl_certfile
+        , ssl_keyfile=kafka_ssl_keyfile
+        )
+
+bus_run = FlaskKafka(INTERRUPT_EVENT
+         , bootstrap_servers=",".join([kafka_brokers])
+         , group_id=kafka_group_fulfill
+         , security_protocol=kafka_security_protocol
+         , ssl_cafile=kafka_ssl_cafile
+         , ssl_certfile=kafka_ssl_certfile
+         , ssl_keyfile=kafka_ssl_keyfile
+#             , max_poll_interval_ms=kafka_max_poll_interval_ms
+         , max_poll_records=kafka_max_poll_records
+         )
 
 @app.route('/api/v1/nodes/list', methods=['GET'])
 def nodes_list():
@@ -74,49 +117,58 @@ def nodes_list():
     except Exception as e:
         return jsonify({"error": str(e)})
 
-def run_fulfillment_background(network_id, requested_nodes):
-    conn = get_esi_connection(cloud=cloud_name)
-    # Run async fulfillment tasks inside this thread
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(fulfill_order_loop(conn, network_id, requested_nodes))
-    loop.close()
-
-async def fulfill_order_loop(conn, network_id, requested_nodes):
+async def fulfill_order_loop(conn, order_data, zk):
     # Keep in the loop until all nodes requests fulfilled
-    while True:
-        tasks = []
-        now = datetime.now(timezone.utc)
-        offers_all = list(conn.lease.offers(available_start_time=now,
-                                            available_end_time=now + timedelta(days=7)))
-        for item in requested_nodes:
-            resource_class = item['resource_class']
-            number = item['number']
-            if number <= 0:
+    order_id = order_data['order_id']
+    network_id = order_data['network_id']
+    requested_nodes = copy.deepcopy(order_data['nodes'])
+    try:
+        while True:
+            tasks = []
+            now = datetime.now(timezone.utc)
+            offers_all = list(conn.lease.offers(available_start_time=now,
+                                                available_end_time=now + timedelta(days=7)))
+            for item in requested_nodes:
+                resource_class = item['resource_class']
+                number = item['number']
+                if number <= 0:
+                    continue
+                # Filter the offer with resource_class
+                offers_filtered = [o for o in offers_all
+                                if o.resource_class == resource_class]
+                # Grab the first X offers to claim
+                offers_to_claim = offers_filtered[:number]
+
+                for offer in offers_to_claim:
+                    tasks.append(fulfill_offer_task(conn, offer, network_id, order_id))
+                    item['number'] -= 1
+
+            if not tasks:
+                LOG.info('No offer is available yet. Retrying...')
+                await asyncio.sleep(60)
                 continue
-            # Filter the offer with resource_class
-            offers_filtered = [o for o in offers_all
-                               if o.resource_class == resource_class]
-            # Grab the first X offers to claim
-            offers_to_claim = offers_filtered[:number]
+            await asyncio.gather(*tasks)
 
-            for offer in offers_to_claim:
-                tasks.append(fulfill_offer_task(conn, offer, network_id))
-                item['number'] -= 1
+            # Break the loop if all node requests fulfilled
+            if all(item['number'] <= 0 for item in requested_nodes):
+                order_data["status"] = "stopped"
+                producer.send(kafka_topic_order_loop, json.dumps(order_data).encode('utf-8'))
+                zk.set(f"baremetal/fulfill_order/{order_id}/status", bytes("Completed", "utf-8"))
+                zk.stop()
+                break
 
-        if not tasks:
-            LOG.info('No offer is available yet. Retrying...')
+            # Retry if not all requests fulfilled yet
+            LOG.info('Not all requests fulfilled yet. Retrying...')
             await asyncio.sleep(60)
-            continue
-        await asyncio.gather(*tasks)
-        # Break the loop if all node requests fulfilled
-        if all(item['number'] <= 0 for item in requested_nodes):
-            break
-        # Retry if not all requests fulfilled yet
-        LOG.info('Not all requests fulfilled yet. Retrying...')
-        await asyncio.sleep(60)
+    except Exception as e:
+        LOG.error(e)
+        order_data["status"] = "error"
+        producer.send(kafka_topic_order_loop, json.dumps(order_data).encode('utf-8'))
+        zk.set(f"baremetal/fulfill_order/{order_id}/status", bytes("Error", 'utf-8'))
+        if zk:
+            zk.stop()
 
-async def fulfill_offer_task(conn, offer, network_id):
+async def fulfill_offer_task(conn, offer, network_id, order_id):
     """
     Claims an offer, waits for lease to become active,
     and attaches the network to the leased node.
@@ -124,6 +176,9 @@ async def fulfill_offer_task(conn, offer, network_id):
     try:
         lease = conn.lease.claim_offer(offer.id)
         LOG.info(f"Claimed offer {offer.id}: lease {lease.get('uuid')}")
+        result = {"order_id": order_id, "offer_id": offer.id, "lease_id": lease.get('uuid')}
+        producer.send(kafka_topic_fulfill_offer, json.dumps(result).encode('utf-8'))
+        LOG.info(f"Sent the offer claim message to Kafka: {result}")
         while True:
             lease_status = conn.lease.get_lease(lease.get('uuid')).status
             LOG.info('Get lease status...')
@@ -143,6 +198,7 @@ def baremetal_order_fulfill():
     Fulfills a baremetal node order.
     A bare-metal order should be like this:
     {
+        "order_id": "123_xyz",
         "network_id": "<network UUID or name>",
         "nodes": [
             {"resource_class": "fc430", "number": 2},
@@ -155,10 +211,11 @@ def baremetal_order_fulfill():
         if not order_data:
             return jsonify({'error': 'Missing order data'}), 400
 
+        order_id = order_data.get('order_id')
         network_id = order_data.get('network_id')
         requested_nodes = order_data.get('nodes')
-        if not network_id or not requested_nodes:
-            return jsonify({'error': 'Missing network_id or nodes'}), 400
+        if not order_id or not network_id or not requested_nodes:
+            return jsonify({'error': 'Missing order_id, network_id or nodes'}), 400
 
         # Verify if the network exists
         conn = get_openstack_connection(cloud=cloud_name)
@@ -166,9 +223,10 @@ def baremetal_order_fulfill():
         if not network_res:
             return jsonify({'error': f'Network "{network_id}" not found'}), 404
 
-        # Start fulfillment in background
-        t = Thread(target=run_fulfillment_background, args=(network_id, requested_nodes))
-        t.start()
+        # Send to Kafka
+        order_data["status"] = "start"
+        producer.send(kafka_topic_order_loop, json.dumps(order_data).encode('utf-8'))
+        LOG.info(f"Sent order {order_id} to Kafka topic {kafka_topic_order_loop}")
 
         return jsonify({
             'status': 'CREATED',
@@ -176,6 +234,7 @@ def baremetal_order_fulfill():
         })
 
     except Exception as e:
+        LOG.error(f'error: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/v1/networks/list', methods=['GET'])
@@ -188,11 +247,42 @@ def networks_list():
     except Exception as e:
         return jsonify({"error": str(e)})
 
+
+@bus_run.handle(kafka_topic_order_loop)
+def on_fulfill_order(msg):
+    bus_run.consumer.commit()
+    LOG.info("Received fulfillment message from topic %s: %s", kafka_topic_order_loop, msg)
+
+    try:
+        order_data = json.loads(msg.value)
+        order_id = order_data['order_id']
+
+        if order_data.get('status') == 'start':
+            # Start zookeeper
+            zk = KazooClient(hosts=f'{zookeeper_host_name}:{zookeeper_port}')
+            zk.start()
+            zk_path = f"baremetal/fulfill_order/{order_id}/status"
+            try:
+                zk.create(zk_path, b"Running", makepath=True)
+            except NodeExistsError:
+                zk.set(zk_path, b"Running")
+
+            # Run fulfillment async
+            conn = get_esi_connection(cloud=cloud_name)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(fulfill_order_loop(conn, order_data, zk))
+            loop.close()
+
+    except Exception as e:
+        LOG.error(f"Failed to process Kafka message: {e}")
+
 def start():
     flask_port = os.environ.get('FLASK_PORT') or 8081
     flask_port = int(flask_port)
-
+    bus_run.run()
     app.run(port=flask_port, host='0.0.0.0')
+
 
 if __name__ == "__main__":
     start()
