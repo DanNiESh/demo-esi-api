@@ -36,11 +36,21 @@ In a separate terminal, test the request:
 curl -X GET http://localhost:8081/api/v1/nodes/list
 curl -X GET http://localhost:8081/api/v1/networks/list
 curl -X GET http://localhost:8081/api/v1/offers/list
+# Attach the network to the requested nodes:
 curl -X POST http://localhost:8081/api/v1/baremetal-order/fulfill \
   -H "Content-Type: application/json" \
   -d '{"order_id": "123_xyz",
        "network_id": "provisioning",
-       "nodes": [{"resource_class": "fc430", "number": 1}]
+       "nodes": [{"resource_class": "fc430", "number": 2}]
+  }'
+# Or provision the nodes with metalsmith
+curl -X POST http://localhost:8081/api/v1/baremetal-order/fulfill \
+  -H "Content-Type: application/json" \
+  -d '{"order_id": "123_xyz",
+       "network_id": "network-uitest",
+       "nodes": [{"resource_class": "fc430", "number": 1}],
+       "image": "centos-image",
+       "ssh_keys": [<ssh_key_string1>, <ssh_key_string2>...]
   }'
 ```
 
