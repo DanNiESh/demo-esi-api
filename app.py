@@ -18,6 +18,10 @@ import os
 import sys
 import traceback
 
+from metalsmith import _provisioner
+from metalsmith import instance_config
+
+
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -131,7 +135,6 @@ def nodes_list():
 async def fulfill_order_loop(conn, order_data, zk):
     # Keep in the loop until all nodes requests fulfilled
     order_id = order_data['order_id']
-    network_id = order_data['network_id']
     requested_nodes = copy.deepcopy(order_data['nodes'])
     try:
         while True:
@@ -151,7 +154,7 @@ async def fulfill_order_loop(conn, order_data, zk):
                 offers_to_claim = offers_filtered[:number]
 
                 for offer in offers_to_claim:
-                    tasks.append(fulfill_offer_task(conn, offer, network_id, order_id))
+                    tasks.append(fulfill_offer_task(conn, offer, order_data))
                     item['number'] -= 1
 
             if not tasks:
@@ -181,11 +184,16 @@ async def fulfill_order_loop(conn, order_data, zk):
             if zk:
                 zk.stop()
 
-async def fulfill_offer_task(conn, offer, network_id, order_id):
+async def fulfill_offer_task(conn, offer, order_data):
     """
     Claims an offer, waits for lease to become active,
-    and attaches the network to the leased node.
+    and attaches the network to the leased node
+    or provision the node with metalsmith if ssh_keys and image are provided.
     """
+    network_id = order_data.get('network_id')
+    ssh_keys = order_data.get('ssh_keys')
+    image = order_data.get('image')
+    order_id = order_data.get('order_id')
     try:
         lease = conn.lease.claim_offer(offer.id)
         LOG.info(f"Claimed offer {offer.id}: lease {lease.get('uuid')}")
@@ -200,8 +208,18 @@ async def fulfill_offer_task(conn, offer, network_id, order_id):
                 LOG.info(f'Lease {lease.get("uuid")} is active')
                 break
             await asyncio.sleep(30)
-        nodes.network_attach(conn, lease.get('resource_uuid'), {'network': network_id})
-        LOG.info(f"Network {network_id} attached to node {lease.get('resource_uuid')}")
+
+        node_id = lease.get('resource_uuid')
+        if ssh_keys and image:
+            config = instance_config.GenericConfig(ssh_keys=ssh_keys)
+            openstack_conn = get_openstack_connection(cloud=cloud_name)
+            provisioner = _provisioner.Provisioner(session=openstack_conn.session)
+            provisioner.provision_node(node_id, image, nics=[{"network": network_id}], config=config)
+            LOG.info(f"Provisioning node {node_id} with image {image}")
+        elif not ssh_keys and not image:
+            nodes.network_attach(conn, node_id, {'network': network_id})
+            LOG.info(f"Network {network_id} attached to node {lease.get('resource_uuid')}")
+
     except Exception as e:
         LOG.error(f"Error fulfilling offer {offer.id}: {e}")
         raise RuntimeError(f'Error fulfilling offer {offer.id}: {e}')
@@ -219,6 +237,17 @@ def baremetal_order_fulfill():
             {"resource_class": "gpu", "number": 1}
         ]
     }
+    or like this if privisioning with metalsmith:
+    {
+        "order_id": "123_xyz",
+        "network_id": "<network UUID or name>",
+        "nodes": [
+            {"resource_class": "fc430", "number": 2},
+            {"resource_class": "gpu", "number": 1}
+        ],
+        "ssh_keys": [<ssh_key_string>,],
+        "image": <image name or id>
+    }
     """
     try:
         order_data = request.get_json()
@@ -228,8 +257,12 @@ def baremetal_order_fulfill():
         order_id = order_data.get('order_id')
         network_id = order_data.get('network_id')
         requested_nodes = order_data.get('nodes')
+        ssh_keys = order_data.get('ssh_keys')
+        image = order_data.get('image')
         if not order_id or not network_id or not requested_nodes:
             return jsonify({'error': 'Missing order_id, network_id or nodes'}), 400
+        if (ssh_keys and not image) or (image and not ssh_keys):
+            return jsonify({'error': 'Must provide both ssh_keys and image to use metalsmith provisioning.'}), 400
 
         # Verify if the network exists
         conn = get_openstack_connection(cloud=cloud_name)
