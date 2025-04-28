@@ -35,6 +35,7 @@ In a separate terminal, test the request:
 ```bash
 curl -X GET http://localhost:8081/api/v1/nodes/list
 curl -X GET http://localhost:8081/api/v1/networks/list
+curl -X GET http://localhost:8081/api/v1/offers/list
 curl -X POST http://localhost:8081/api/v1/baremetal-order/fulfill \
   -H "Content-Type: application/json" \
   -d '{"order_id": "123_xyz",
