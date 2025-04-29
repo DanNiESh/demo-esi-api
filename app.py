@@ -339,12 +339,14 @@ def offers_list():
     Lists available node offer counts grouped by baremetal resource_class.
 
     Returns:
-        JSON dictionary in format:
-        {
-            "fc430": 4,
-            "gpu": 2,
+        JSON array of resource classes and node counts:
+        [
+            {
+                'resource_class': <name of resource class>,
+                'count': <count of available nodes>
+            },
             ...
-        }
+        ]
     """
     try:
         conn = get_esi_connection(cloud=cloud_name)
@@ -357,7 +359,15 @@ def offers_list():
             rc = offer.resource_class
             resource_class_count[rc] = resource_class_count.get(rc, 0) + 1
 
-        return jsonify(resource_class_count)
+        resource_class_list = []
+        for key in resource_class_count:
+            resource_class_list.append(
+                {
+                    "resource_class": key,
+                    "count": resource_class_count[key]
+                }
+            )
+        return jsonify(resource_class_list)
 
     except Exception as e:
         return jsonify({'error': str(e)})
