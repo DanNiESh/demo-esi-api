@@ -166,7 +166,7 @@ async def fulfill_order_loop(conn, order_data, zk):
             # Break the loop if all node requests fulfilled
             if all(item['number'] <= 0 for item in requested_nodes):
                 if kafka_available:
-                    order_data["status"] = "stopped"
+                    order_data["status"] = "Completed"
                     producer.send(kafka_topic_order_loop, json.dumps(order_data).encode('utf-8'))
                     zk.set(f"baremetal/fulfill_order/{order_id}/status", bytes("Completed", "utf-8"))
                     zk.stop()
@@ -272,7 +272,7 @@ def baremetal_order_fulfill():
 
         # Send to Kafka
         if kafka_available:
-            order_data["status"] = "start"
+            order_data["status"] = "Running"
             producer.send(kafka_topic_order_loop, json.dumps(order_data).encode('utf-8'))
             LOG.info(f"Sent order {order_id} to Kafka topic {kafka_topic_order_loop}")
         else:
@@ -317,7 +317,7 @@ if kafka_available:
             order_data = json.loads(msg.value)
             order_id = order_data['order_id']
 
-            if order_data.get('status') == 'start':
+            if order_data.get('status') == 'Running':
                 # Start zookeeper
                 zk = KazooClient(hosts=f'{zookeeper_host_name}:{zookeeper_port}')
                 zk.start()
