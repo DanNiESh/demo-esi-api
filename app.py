@@ -2,7 +2,7 @@ import asyncio
 import copy
 from datetime import datetime, timezone, timedelta
 from esi_api.connections import get_openstack_connection, get_esi_connection
-from esi.lib import nodes
+from esi.lib import nodes, networks
 
 from consumer import FlaskKafka
 from kafka import  KafkaProducer, errors
@@ -32,6 +32,7 @@ CORS(app)
 INTERRUPT_EVENT = Event()
 
 cloud_name = os.environ.get('CLOUD_NAME') or "openstack"
+external_network = os.environ.get('ESI_EXTERNAL_NETWORK') or "external"
 
 kafka_brokers = os.environ.get('KAFKA_BROKERS') or "kafka-kafka-bootstrap:9093"
 kafka_group_fulfill = os.environ.get('KAFKA_GROUP_FULFILL') or "esi-fulfill-group"
@@ -148,6 +149,7 @@ async def fulfill_order_loop(conn, order_data, zk):
                 producer.send(kafka_topic_order_status, json.dumps(order_data).encode('utf-8'))
                 LOG.info(f"Sent order {order_id} {order_status} to Kafka topic {kafka_topic_order_status}")
             tasks = []
+            floating_ip_assigned = [False]
             now = datetime.now(timezone.utc)
             offers_all = list(conn.lease.offers(available_start_time=now,
                                                 available_end_time=now + timedelta(days=7)))
@@ -163,7 +165,7 @@ async def fulfill_order_loop(conn, order_data, zk):
                 offers_to_claim = offers_filtered[:number]
 
                 for offer in offers_to_claim:
-                    tasks.append(fulfill_offer_task(conn, offer, order_data))
+                    tasks.append(fulfill_offer_task(conn, offer, order_data, floating_ip_assigned))
                     item['number'] -= 1
 
             if not tasks:
@@ -193,7 +195,7 @@ async def fulfill_order_loop(conn, order_data, zk):
             if zk:
                 zk.stop()
 
-async def fulfill_offer_task(conn, offer, order_data):
+async def fulfill_offer_task(conn, offer, order_data, floating_ip_assigned):
     """
     Claims an offer, waits for lease to become active,
     and attaches the network to the leased node
@@ -220,10 +222,22 @@ async def fulfill_offer_task(conn, offer, order_data):
 
         node_id = lease.get('resource_uuid')
         openstack_conn = get_openstack_connection(cloud=cloud_name)
+        create_floating_ip = order_data.get('create_floating_ip', 'False').lower() == 'true'
+        port = None
+
+        if create_floating_ip and not floating_ip_assigned[0]:
+            port = networks.create_port(openstack_conn, node_id, openstack_conn.network.find_network(network_id))
+            external_network_id = openstack_conn.network.find_network(external_network).id
+            floating_ip = openstack_conn.network.create_ip(floating_network_id=external_network_id)
+            openstack_conn.network.update_ip(floating_ip, port_id=port.id)
+            LOG.info(f'Created floating ip {floating_ip.floating_ip_address} and updated port {port.id} with it')
+            floating_ip_assigned[0] = True
+
         if ssh_keys and image:
             config = instance_config.GenericConfig(ssh_keys=ssh_keys)
             provisioner = _provisioner.Provisioner(session=openstack_conn.session)
-            provisioner.provision_node(node_id, image, nics=[{"network": network_id}], config=config)
+            provisioner.provision_node(node_id, image, config=config,
+                                       nics=[{"port": port.id} if port else {"network": network_id}])
             LOG.info(f"Provisioning node {node_id} with image {image}")
         elif not ssh_keys and not image:
             # Adopt the node
@@ -231,8 +245,12 @@ async def fulfill_offer_task(conn, offer, order_data):
             if node_provsion_state != 'manageable':
                 openstack_conn.baremetal.set_node_provision_state(node=node_id, target="manage", wait=True)
             openstack_conn.baremetal.set_node_provision_state(node=node_id, target="adopt")
-            nodes.network_attach(conn, node_id, {'network': network_id})
+            if port:
+                nodes.network_attach(conn, node_id, {'port': port.id})
+            else:
+                nodes.network_attach(conn, node_id, {'network': network_id})
             openstack_conn.baremetal.set_node_power_state(node=node_id, target="power on")
+
             LOG.info(f"Network {network_id} attached to node {lease.get('resource_uuid')}")
 
     except Exception as e:
@@ -250,7 +268,8 @@ def baremetal_order_fulfill():
         "nodes": [
             {"resource_class": "fc430", "number": 2},
             {"resource_class": "gpu", "number": 1}
-        ]
+        ],
+        "create_floating_ip": <True or False>
     }
     or like this if privisioning with metalsmith:
     {
@@ -260,6 +279,7 @@ def baremetal_order_fulfill():
             {"resource_class": "fc430", "number": 2},
             {"resource_class": "gpu", "number": 1}
         ],
+        "create_floating_ip": <True or False>,
         "ssh_keys": [<ssh_key_string>,],
         "image": <image name or id>
     }

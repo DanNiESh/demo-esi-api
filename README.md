@@ -41,7 +41,8 @@ curl -X POST http://localhost:8081/api/v1/baremetal-order/fulfill \
   -H "Content-Type: application/json" \
   -d '{"order_id": "123_xyz",
        "network_id": "provisioning",
-       "nodes": [{"resource_class": "fc430", "number": 2}]
+       "nodes": [{"resource_class": "fc430", "number": 2}],
+       "create_floating_ip": "True"
   }'
 # Or provision the nodes with metalsmith
 curl -X POST http://localhost:8081/api/v1/baremetal-order/fulfill \
@@ -49,6 +50,7 @@ curl -X POST http://localhost:8081/api/v1/baremetal-order/fulfill \
   -d '{"order_id": "123_xyz",
        "network_id": "network-uitest",
        "nodes": [{"resource_class": "fc430", "number": 1}],
+       "create_floating_ip": "True",
        "image": "centos-image",
        "ssh_keys": [<ssh_key_string1>, <ssh_key_string2>...]
   }'
