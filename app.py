@@ -10,6 +10,7 @@ from kazoo.client import KazooClient
 from kazoo.exceptions import NodeExistsError
 
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 import logging
 from threading import Event, Thread
 import json
@@ -26,6 +27,7 @@ LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
+CORS(app)
 
 INTERRUPT_EVENT = Event()
 
@@ -124,10 +126,12 @@ def nodes_list():
                             network_string = "%s [%s (%s)]" % (network_string, network.get("name"), network.get("provider_segmentation_id"))
                     network_info_list.append(network_string)
 
-            items.append({'node': node,
+            items.append({
+                'node': node,
                 'lease_info': lease_list,
                 'network_info': "\n".join(network_info_list)
-                })
+            })
+
         return jsonify(items)
     except Exception as e:
         return jsonify({"error": str(e)})
@@ -286,12 +290,10 @@ def baremetal_order_fulfill():
             # Start fulfillment in background
             t = Thread(target=run_fulfillment_background, args=(order_data,))
             t.start()
-
         return jsonify({
             'status': 'CREATED',
             'code': 201,
         })
-
     except Exception as e:
         LOG.error(f'error: {str(e)}')
         return jsonify({'error': str(e)}), 500
@@ -374,7 +376,6 @@ def offers_list():
                 }
             )
         return jsonify(resource_class_list)
-
     except Exception as e:
         return jsonify({'error': str(e)})
 
