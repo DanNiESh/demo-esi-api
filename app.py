@@ -210,14 +210,20 @@ async def fulfill_offer_task(conn, offer, order_data):
             await asyncio.sleep(30)
 
         node_id = lease.get('resource_uuid')
+        openstack_conn = get_openstack_connection(cloud=cloud_name)
         if ssh_keys and image:
             config = instance_config.GenericConfig(ssh_keys=ssh_keys)
-            openstack_conn = get_openstack_connection(cloud=cloud_name)
             provisioner = _provisioner.Provisioner(session=openstack_conn.session)
             provisioner.provision_node(node_id, image, nics=[{"network": network_id}], config=config)
             LOG.info(f"Provisioning node {node_id} with image {image}")
         elif not ssh_keys and not image:
+            # Adopt the node
+            node_provsion_state = openstack_conn.baremetal.get_node(node_id).provision_state
+            if node_provsion_state != 'manageable':
+                openstack_conn.baremetal.set_node_provision_state(node=node_id, target="manage", wait=True)
+            openstack_conn.baremetal.set_node_provision_state(node=node_id, target="adopt")
             nodes.network_attach(conn, node_id, {'network': network_id})
+            openstack_conn.baremetal.set_node_power_state(node=node_id, target="power on")
             LOG.info(f"Network {network_id} attached to node {lease.get('resource_uuid')}")
 
     except Exception as e:
