@@ -37,6 +37,7 @@ kafka_brokers = os.environ.get('KAFKA_BROKERS') or "kafka-kafka-bootstrap:9093"
 kafka_group_fulfill = os.environ.get('KAFKA_GROUP_FULFILL') or "esi-fulfill-group"
 kafka_topic_fulfill_offer = os.environ.get('KAFKA_TOPIC_FULFILL_OFFER') or "esi-fulfill-offer-task"
 kafka_topic_order_loop = os.environ.get('KAFKA_TOPIC_ORDER_LOOP') or "esi-fulfill-order-loop"
+kafka_topic_order_status = os.environ.get('KAFKA_TOPIC_ORDER_STATUS') or "esi-fulfill-order-status"
 kafka_security_protocol = os.environ.get('KAFKA_SECURITY_PROTOCOL') or "SSL"
 # Run: oc extract -n ai-telemetry-cbca60 secret/kafka-cluster-ca-cert --to=/opt/app-root/src/kafka/truststore/ --keys=ca.crt --confirm
 kafka_ssl_cafile = os.environ.get('KAFKA_SSL_CAFILE') or "/opt/app-root/src/kafka/truststore/ca.crt"
@@ -142,6 +143,9 @@ async def fulfill_order_loop(conn, order_data, zk):
     requested_nodes = copy.deepcopy(order_data['nodes'])
     try:
         while True:
+            order_status = order_data['status']
+            producer.send(kafka_topic_order_status, json.dumps(order_data).encode('utf-8'))
+            LOG.info(f"Sent order {order_id} {order_status} to Kafka topic {kafka_topic_order_status}")
             tasks = []
             now = datetime.now(timezone.utc)
             offers_all = list(conn.lease.offers(available_start_time=now,
@@ -171,7 +175,7 @@ async def fulfill_order_loop(conn, order_data, zk):
             if all(item['number'] <= 0 for item in requested_nodes):
                 if kafka_available:
                     order_data["status"] = "Completed"
-                    producer.send(kafka_topic_order_loop, json.dumps(order_data).encode('utf-8'))
+                    producer.send(kafka_topic_order_status, json.dumps(order_data).encode('utf-8'))
                     zk.set(f"baremetal/fulfill_order/{order_id}/status", bytes("Completed", "utf-8"))
                     zk.stop()
                 break
@@ -183,7 +187,7 @@ async def fulfill_order_loop(conn, order_data, zk):
         LOG.error(e)
         if kafka_available:
             order_data["status"] = "error"
-            producer.send(kafka_topic_order_loop, json.dumps(order_data).encode('utf-8'))
+            producer.send(kafka_topic_order_status, json.dumps(order_data).encode('utf-8'))
             zk.set(f"baremetal/fulfill_order/{order_id}/status", bytes("Error", 'utf-8'))
             if zk:
                 zk.stop()
