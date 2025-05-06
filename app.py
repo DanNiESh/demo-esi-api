@@ -143,9 +143,10 @@ async def fulfill_order_loop(conn, order_data, zk):
     requested_nodes = copy.deepcopy(order_data['nodes'])
     try:
         while True:
-            order_status = order_data['status']
-            producer.send(kafka_topic_order_status, json.dumps(order_data).encode('utf-8'))
-            LOG.info(f"Sent order {order_id} {order_status} to Kafka topic {kafka_topic_order_status}")
+            if kafka_available:
+                order_status = order_data['status']
+                producer.send(kafka_topic_order_status, json.dumps(order_data).encode('utf-8'))
+                LOG.info(f"Sent order {order_id} {order_status} to Kafka topic {kafka_topic_order_status}")
             tasks = []
             now = datetime.now(timezone.utc)
             offers_all = list(conn.lease.offers(available_start_time=now,
