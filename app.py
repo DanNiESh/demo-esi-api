@@ -93,9 +93,11 @@ def nodes_list():
                 'lease_info': [esi.lease.v1.lease.Lease],
                 'network_info': [
                     {
-                        'baremetal_port': openstack.baremetal.v1.port.Port,
-                        'network_ports':[openstack.network.v2.port.Port] or [],
-                        'network': openstack.network.v2.network.Network or None
+                        'mac_address': <mac address>
+                        'network': <network name>
+                        'provider_segmentation_id': <provider segmentation id>
+                        'fixed_ip': <fixed ip>
+                        'floating_ip': <floating ip>
                     },
                     ...
                 ]
@@ -119,18 +121,27 @@ def nodes_list():
             node_network = node_networks.get(node.id)
             if node_network:
                 for node_port in node_network:
-                    mac_address = node_port["baremetal_port"]["address"]
-                    network_string = mac_address
+                    stripped_network_info = {
+                        'mac_address': node_port["baremetal_port"]["address"],
+                    }
                     if node_port["networks"]:
                         network = node_port['networks'].get('parent')
                         if network:
-                            network_string = "%s [%s (%s)]" % (network_string, network.get("name"), network.get("provider_segmentation_id"))
-                    network_info_list.append(network_string)
+                            stripped_network_info['network'] = network.get('name')
+                            stripped_network_info['provider_segmentation_id'] = network.get('provider_segmentation_id')
+                    if node_port['network_ports']:
+                        if len(node_port['network_ports']) > 0:
+                            network_port = node_port['network_ports'][0]
+                            if len(network_port['fixed_ips']) > 0:
+                                stripped_network_info['fixed_ip'] = network_port.fixed_ips[0]['ip_address']
+                    if node_port["floating_ip"]:
+                        stripped_network_info['floating_ip'] = node_port['floating_ip'].get('floating_ip_address')
+                    network_info_list.append(stripped_network_info)
 
             items.append({
                 'node': node,
                 'lease_info': lease_list,
-                'network_info': "\n".join(network_info_list)
+                'network_info': network_info_list
             })
 
         return jsonify(items)
