@@ -22,7 +22,15 @@ To establish a connection, you'll need to:
 For the provided `example_clouds.yaml`, the CLOUD_NAME should be set to "openstack".
 
 ## How to run the application in an OpenShift AI workbench
+Before running the application, update the following environment variables to use unique values starting with "esi-" to avoid conflicts between workbenches:
 
+```
+KAFKA_GROUP_FULFILL
+KAFKA_TOPIC_FULFILL_OFFER
+KAFKA_TOPIC_ORDER_LOOP
+KAFKA_TOPIC_ORDER_STATUS
+```
+To run the application:
 ```bash
 git clone https://github.com/CCI-MOC/demo-esi-api.git ~/demo-esi-api
 cd ~/demo-esi-api
