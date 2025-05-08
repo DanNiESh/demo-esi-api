@@ -11,6 +11,7 @@ from kazoo.exceptions import NodeExistsError
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_caching import Cache
 import logging
 from threading import Event, Thread
 import json
@@ -18,6 +19,7 @@ import signal
 import os
 import sys
 import traceback
+import time
 
 from metalsmith import _provisioner
 from metalsmith import instance_config
@@ -27,12 +29,15 @@ LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
+cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 60})
+
 CORS(app)
 
 INTERRUPT_EVENT = Event()
 
 cloud_name = os.environ.get('CLOUD_NAME') or "openstack"
 external_network = os.environ.get('ESI_EXTERNAL_NETWORK') or "external"
+node_cache_refresh_interval = os.environ.get('NODE_CACHE_REFRESH_INTERVAL') or 30
 
 kafka_brokers = os.environ.get('KAFKA_BROKERS') or "kafka-kafka-bootstrap:9093"
 kafka_group_fulfill = os.environ.get('KAFKA_GROUP_FULFILL') or "esi-fulfill-group"
@@ -106,6 +111,15 @@ def nodes_list():
             ...
         ]
     """
+    cached_data = cache.get('nodes_list')
+    if cached_data is None:
+        cached_data = fetch_nodes_data()
+        cache.set('nodes_list', cached_data)
+    else:
+        LOG.info("Now fetching nodes list from cache")
+    return jsonify(cached_data)
+
+def fetch_nodes_data():
     try:
         conn = get_esi_connection(cloud=cloud_name)
         node_networks_res = nodes.network_list(conn)
@@ -115,7 +129,7 @@ def nodes_list():
         for node in nodes_all:
             # Get node leases
             leases = conn.lease.leases(resource_uuid=node.id)
-            lease_list = [l for l in leases] if leases else []
+            lease_list = [l.to_dict() for l in leases] if leases else []
 
             # Get node network configurations
             network_info_list = []
@@ -140,14 +154,21 @@ def nodes_list():
                     network_info_list.append(stripped_network_info)
 
             items.append({
-                'node': node,
+                'node': node.to_dict(),
                 'lease_info': lease_list,
                 'network_info': network_info_list
             })
 
-        return jsonify(items)
+        return items
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return {"error": str(e)}
+
+def refresh_node_cache():
+    while True:
+        LOG.info("Refreshing nodes list cache...")
+        data = fetch_nodes_data()
+        cache.set('nodes_list', data)
+        time.sleep(node_cache_refresh_interval)
 
 async def fulfill_order_loop(conn, order_data, zk):
     # Keep in the loop until all nodes requests fulfilled
@@ -335,6 +356,7 @@ def baremetal_order_fulfill():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/v1/networks/list', methods=['GET'])
+@cache.cached()
 def networks_list():
     try:
         conn = get_openstack_connection(cloud=cloud_name)
@@ -418,6 +440,11 @@ def offers_list():
 def start():
     flask_port = os.environ.get('FLASK_PORT') or 8081
     flask_port = int(flask_port)
+
+    # Start background thread to refresh node list cache
+    refresh_thread = Thread(target=refresh_node_cache, daemon=True)
+    refresh_thread.start()
+
     if kafka_available:
         bus_run.run()
     app.run(port=flask_port, host='0.0.0.0')
